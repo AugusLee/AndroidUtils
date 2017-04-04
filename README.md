@@ -1,2 +1,3 @@
 # AndroidUtils
-some util tool class ,such as ToastUtil,LogUtil
+this repostory is used to store some util class ,such as ToastUtil,LogUtil。
+Used in android application project
