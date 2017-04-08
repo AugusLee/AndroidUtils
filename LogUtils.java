@@ -5,6 +5,10 @@ package Utils;
  */
 
 import android.os.Environment;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Looper;
+import android.os.Message;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -12,9 +16,9 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+
 
 /**
  * LogUtils工具说明:
@@ -26,7 +30,7 @@ import java.util.Date;
  */
 public class LogUtils {
     //log的目录
-    private static final String LOGFILEDIR = "/myapplication/logs/";
+    private static final String LOGFILEDIR = "myapplication/logs";
 
     public static final int VERBOSE = 1;
     public static final int DEBUG = 2;
@@ -36,6 +40,14 @@ public class LogUtils {
     public static final int NOTHING = 6;
     public static final int LEVEL = VERBOSE;
     public static final String SEPARATOR = ",";
+
+    private static final int LOGFILEMAX = 512 * 1024;
+    private static StringBuffer mWriteMsgBuffer;
+    private final static int WriteMsgBufferMax = 1 * 1024;
+    static HandlerThread mHandlerThread;
+    static MyHandler mHandler;
+
+    private static final int WRITE_MSG_WHAT = 0;
 
     public static void v(String message) {
         if (LEVEL <= VERBOSE) {
@@ -52,6 +64,13 @@ public class LogUtils {
                 tag = getDefaultTag(stackTraceElement);
             }
             Log.v(tag, getLogInfo(stackTraceElement) + message);
+        }
+    }
+
+    public static void v(boolean saveLog,String tag, String message) {
+        v(tag,message);
+        if(saveLog){
+            saveFile(tag, message);
         }
     }
 
@@ -76,7 +95,7 @@ public class LogUtils {
     public static void d(boolean saveLog, String tag, String message){
         d(tag, message);
         if(saveLog){
-            saveFile(tag,message);
+            saveFile(tag, message);
         }
     }
 
@@ -98,6 +117,13 @@ public class LogUtils {
         }
     }
 
+    public static void i(boolean saveLog, String tag, String message) {
+        i(tag,message);
+        if(saveLog){
+            saveFile(tag,message);
+        }
+    }
+
     public static void w(String message) {
         if (LEVEL <= WARN) {
             StackTraceElement stackTraceElement = Thread.currentThread().getStackTrace()[3];
@@ -116,6 +142,13 @@ public class LogUtils {
         }
     }
 
+    public static void w(boolean saveLog, String tag, String message) {
+        w(tag,message);
+        if(saveLog){
+            saveFile(tag,message);
+        }
+    }
+
     public static void e(String message) {
         if (LEVEL <= ERROR) {
             StackTraceElement stackTraceElement = Thread.currentThread().getStackTrace()[3];
@@ -131,6 +164,13 @@ public class LogUtils {
                 tag = getDefaultTag(stackTraceElement);
             }
             Log.e(tag, getLogInfo(stackTraceElement) + message);
+        }
+    }
+
+    public static void e(boolean saveLog, String tag, String message) {
+        e(tag,message);
+        if(saveLog){
+            saveFile(tag,message);
         }
     }
 
@@ -177,13 +217,26 @@ public class LogUtils {
 
 
     /**
+     * 根据通配符
      * 获取时间
      *
      * @return
      */
-    private static String getCurrentTime() {
+    private static String getCurrentTime(String str) {
         long currentTime = System.currentTimeMillis();                    //得到的是ms
-        SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd-HH:mm:ss");
+        SimpleDateFormat formatter = new SimpleDateFormat(str);
+        Date date = new Date(currentTime);
+        String time = formatter.format(date);
+        return time;
+    }
+
+    /**
+     * 以默认通配符获取当前时间，
+     * @return
+     */
+    private static String getCurrentTime(){
+        long currentTime = System.currentTimeMillis();                    //得到的是ms
+        SimpleDateFormat formatter = new SimpleDateFormat("yyyy.MM.dd-HH:mm:ss");
         Date date = new Date(currentTime);
         String time = formatter.format(date);
         return time;
@@ -200,38 +253,97 @@ public class LogUtils {
         if(!dir.exists()){
             dir.mkdirs();
         }
-        String logName = "log.log";
-        return sdcardPath + LOGFILEDIR + logName;
+        String logName = sdcardPath + "/" + LOGFILEDIR + "/" + "log" ;
+        return  logName;
     }
 
     /**
      * 将log信息保存到文件中
      * @param tag
-     * @param msg
+     * @param content
      */
-    private static void saveFile(String tag, String msg) {
-        String time = getCurrentTime();
-        StringBuffer stringBuffer = new StringBuffer();
-        stringBuffer.append(time + "  ").append(tag + ":").append(msg);
-        String content = stringBuffer.toString() + "\n";
-
-        String logPath = getLogFilePath();
-        File logFile = new File(logPath);
-        try {
-            if(!logFile.exists()){
-                logFile.createNewFile();
+    private static void saveFile(String tag, String content) {
+        synchronized (LogUtils.class) {
+            String time = getCurrentTime();
+            if(mWriteMsgBuffer == null){
+                mWriteMsgBuffer = new StringBuffer();
             }
-            FileOutputStream outputStream = new FileOutputStream(logFile,true);
-            byte[] bytes = content.getBytes();
-            outputStream.write(bytes);
-            outputStream.flush();
-            outputStream.close();
-        } catch (FileNotFoundException e) {
-            e.printStackTrace();
-        }catch (IOException e) {
-            e.printStackTrace();
-        }
+            StackTraceElement stackTraceElement = Thread.currentThread().getStackTrace()[3];
+            mWriteMsgBuffer.append(time + "  ").append(tag + ":").append(stackTraceElement + ":").append(content + "\n");
 
+            if (mHandlerThread == null) {
+                mHandlerThread = new HandlerThread("write_log_thread");
+                mHandlerThread.start();
+            }
+
+            if (mHandler == null) {
+                // Handler的handlerMessage方法在主线程执行还是在子线程执行，取决于创建Handler时传递给Handler的looper
+                mHandler = new MyHandler(mHandlerThread.getLooper());
+            }
+
+            Message msg = new Message();
+            msg.what = WRITE_MSG_WHAT;
+            mHandler.removeMessages(WRITE_MSG_WHAT);
+            if (mWriteMsgBuffer.length() >= WriteMsgBufferMax) {
+                mHandler.sendMessage(msg);
+            } else {
+                mHandler.sendMessageDelayed(msg,3000);
+            }
+
+        }
     }
 
+
+    /**
+     * 写入文件中
+     */
+    private static void writeFile(){
+        synchronized (LogUtils.class) {
+            if(mWriteMsgBuffer.length() == 0){
+                return;
+            }
+            String content = mWriteMsgBuffer.toString();
+            String logPath = getLogFilePath();
+            File logFile = new File(logPath);
+            FileOutputStream outputStream = null;
+            try {
+
+                if (!logFile.exists()) {
+                    logFile.createNewFile();
+                }
+                outputStream = new FileOutputStream(logFile, true);
+                byte[] bytes = content.getBytes("utf-8");
+                outputStream.write(bytes);
+                outputStream.flush();
+                mWriteMsgBuffer.delete(0,mWriteMsgBuffer.length());
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
+            } catch (IOException e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    if (outputStream != null) {
+                        outputStream.close();
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    private static class MyHandler extends Handler{
+        public MyHandler(Looper loop){
+            super(loop);
+        }
+
+        @Override
+        public void handleMessage(Message msg) {
+            switch(msg.what) {
+                case WRITE_MSG_WHAT:
+                    writeFile();
+                    break;
+            }
+        }
+    }
 }
